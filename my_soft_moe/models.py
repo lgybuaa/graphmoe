@@ -8,6 +8,7 @@ from Utils.TimeLogger import log
 from torch.nn import MultiheadAttention
 from time import time
 from torch_geometric.nn import GCNConv  # 从PyTorch几何库中导入图卷积网络层（GCNConv）
+from torch_geometric.data import Data, Batch
 from einops import rearrange
 from torch import nn, einsum, Tensor
 from einops import rearrange, pack, unpack
@@ -80,10 +81,11 @@ class Experts(nn.Module):
 class GraphMOE(nn.Module):
     def __init__(self):
         super(GraphMOE, self).__init__()
-        self.softgate = nn.Parameter(t.randn(args.expert_num, args.latdim)) # (e, d)
+        self.softgate = nn.Parameter(t.randn(args.expert_num, args.latdim),requires_grad=True) # (e, d)
         self.experts = Experts(
             experts=[GCN() for _ in range(args.expert_num)],
         )
+        self.lin_pred = nn.Linear(args.latdim, 1)
 
     def forward(self, batch_data: list):
         """
@@ -100,8 +102,10 @@ class GraphMOE(nn.Module):
         #     edge.append(batch_data[i].edge_index)
         # x = torch.stack(x)  # (b, n, d)
         # edge = torch.stack(edge)    # (b, 2, n)
-        x = batch_data.x[batch_data.node_map]
+        x = batch_data.x
+        # x = batch_data.x[batch_data.node_map]
         edge = batch_data.edge_index
+        edge_label_index = batch_data.edge_label_index
         # x = rearrange(x, 'n d -> 1 n d')
 
         logits = einsum('n d, e d -> n e', x, self.softgate)
@@ -112,7 +116,19 @@ class GraphMOE(nn.Module):
         slots = einsum('n d, n e -> e n d', x, dispatch_weights)  # (b, e, n, d)
 
         expert_out = self.experts([slots,edge])    # (b, e, n, d)
+
         # 结果聚合
         out = einsum('e n d, n e -> n d', expert_out, combine_weights)
 
-        return out
+        # 链接预测
+        if self.training:
+            h_src = out[edge_label_index[0, :]]
+            h_dst = out[edge_label_index[1, :]]
+            src_dst_mult = h_src * h_dst
+            return src_dst_mult
+        else:
+            return out
+        # out = self.lin_pred(src_dst_mult).squeeze(-1)
+
+
+        # return out
