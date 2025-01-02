@@ -4,7 +4,6 @@ from torch import nn
 import torch.nn.functional as F
 from params import args
 import numpy as np
-from Utils.TimeLogger import log
 from torch.nn import MultiheadAttention
 from time import time
 from torch_geometric.nn import GCNConv  # 从PyTorch几何库中导入图卷积网络层（GCNConv）
@@ -12,8 +11,9 @@ from torch_geometric.data import Data, Batch
 from einops import rearrange
 from torch import nn, einsum, Tensor
 from einops import rearrange, pack, unpack
-from my_gcn import My_GCNConv, My_GCNConv_2
+from my_gcn import My_GCNConv
 from train_utils import LayerNorm, RMSNorm, gumbel_noise
+import scipy.sparse as sp
 
 
 
@@ -174,60 +174,43 @@ class GCN_M(torch.nn.Module):  # 定义一个GNN类，继承自PyTorch的Module�
 
         self.lin_pred = nn.Linear(args.latdim, 1)
 
+        self.dropout = nn.Dropout(p=args.drop_rate)
+
     def forward(self, data):  # 定义前向传播函数，接受一个数据对象作为输入
+        all_router_logits = []
         x = data.x
         # x = batch_data.x[batch_data.node_map]
         edge_index = data.edge_index
         edge_label_index = data.edge_label_index
 
-        x = self.conv1(x, edge_index)  # 通过第一个图卷积层处理节点特征
+        x, router_logits = self.conv1(x, edge_index)  # 通过第一个图卷积层处理节点特征
+        all_router_logits.append(router_logits)
         # x = F.relu(x)  # 对输出进行ReLU激活函数操作
-        x = F.dropout(x, training=self.training)  # 对输出进行Dropout操作，用于防止过拟合
-        x = self.conv2(x, edge_index)  # 通过第二个图卷积层处理节点特征
+        x = self.dropout(x)  # 对输出进行Dropout操作，用于防止过拟合
+        x, router_logits = self.conv2(x, edge_index)  # 通过第二个图卷积层处理节点特征
+        all_router_logits.append(router_logits)
         # x = F.relu(x)  # 对输出进行ReLU激活函数操作
-        x = F.dropout(x, training=self.training)  # 对输出进行Dropout操作，用于防止过拟合
-        out = self.conv3(x, edge_index)  # 通过第二个图卷积层处理节点特征
+        x = self.dropout(x)  # 对输出进行Dropout操作，用于防止过拟合
+        embed, router_logits = self.conv3(x, edge_index)  # 通过第三个图卷积层处理节点特征
+        all_router_logits.append(router_logits)
         # out = F.relu(x)  # 对输出进行ReLU激活函数操作
-
-        h_src = out[edge_label_index[0, :]]
-        h_dst = out[edge_label_index[1, :]]
+        h_src = embed[edge_label_index[0, :]]
+        h_dst = embed[edge_label_index[1, :]]
         src_dst_mult = h_src * h_dst
-        out = self.lin_pred(src_dst_mult).squeeze(-1)
-        return out
+        pred_out = self.lin_pred(src_dst_mult).squeeze(-1)
+        return pred_out, all_router_logits, embed
 
-class GCN_M_2(torch.nn.Module):  # 定义一个GNN类，继承自PyTorch的Module类
-    def __init__(self):  # 定义GNN类的初始化函数
-        super().__init__()  # 调用父类（Module类）的初始化函数
-        # 创建第一个图卷积层，输入特征维度为数据集节点特征维度，输出特征维度为128
-        self.conv1 = My_GCNConv_2(args.latdim, args.latdim*2)
-        # 创建第二个图卷积层，输入特征维度为128，输出特征维度为数128
-        self.conv2 = My_GCNConv_2(args.latdim*2, args.latdim*2)
-        # 创建第三个图卷积层，输入特征维度为128，输出特征维度为数128
-        self.conv3 = My_GCNConv_2(args.latdim*2, args.latdim)
-        
-        self.dropout = nn.Dropout(p=0.5)
+    def pred_for_test(self, batch_data, cand_size, embeds):
+        ancs, trn_mask = list(map(lambda x: x.to(args.devices[0]), batch_data))
+        anc_embeds = embeds[ancs]
+        cand_embeds = embeds[-cand_size:]
 
-        self.lin_pred = nn.Linear(args.latdim, 1)
+        mask_mat = torch.sparse.FloatTensor(trn_mask, torch.ones(trn_mask.shape[1]).to(args.devices[0]),
+                                        torch.Size([ancs.shape[0], cand_size]))
+        dense_mat = mask_mat.to_dense()
+        all_preds = anc_embeds @ cand_embeds.T * (1 - dense_mat) - dense_mat * 1e8
+        return all_preds
 
-    def forward(self, data):  # 定义前向传播函数，接受一个数据对象作为输入
-        x = data.x
-        # x = batch_data.x[batch_data.node_map]
-        edge_index = data.edge_index
-        edge_label_index = data.edge_label_index
 
-        x = self.conv1(x, edge_index)  # 通过第一个图卷积层处理节点特征
-        x = F.relu(x)  # 对输出进行ReLU激活函数操作
-        x = self.dropout(x)
-        # x = F.dropout(x, training=self.training)  # 对输出进行Dropout操作，用于防止过拟合
-        x = self.conv2(x, edge_index)  # 通过第二个图卷积层处理节点特征
-        x = F.relu(x)  # 对输出进行ReLU激活函数操作
-        x = self.dropout(x)
-        # x = F.dropout(x, training=self.training)  # 对输出进行Dropout操作，用于防止过拟合
-        x = self.conv3(x, edge_index)  # 通过第二个图卷积层处理节点特征
-        out = F.relu(x)  # 对输出进行ReLU激活函数操作
 
-        h_src = out[edge_label_index[0, :]]
-        h_dst = out[edge_label_index[1, :]]
-        src_dst_mult = h_src * h_dst
-        out = self.lin_pred(src_dst_mult).squeeze(-1)
-        return out
+
