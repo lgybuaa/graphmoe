@@ -7,6 +7,8 @@ from typing import Optional, Tuple, List, Union
 from params import args
 from sklearn.metrics import f1_score
 from sklearn.metrics import roc_auc_score
+from data_utils import TstData
+from torch_geometric.loader import LinkNeighborLoader
 from tqdm import tqdm
 import numpy as np
 
@@ -212,7 +214,7 @@ def print_log(batch_num, all_router_logits, is_train=True):
 def make_trn_masks(numpy_usrs, csr_mat):
     trn_masks = csr_mat[numpy_usrs].tocoo()
     cand_size = trn_masks.shape[1]
-    trn_masks = t.from_numpy(np.stack([trn_masks.row, trn_masks.col], axis=0)).long()
+    trn_masks = torch.from_numpy(np.stack([trn_masks.row, trn_masks.col], axis=0)).long()
     return trn_masks, cand_size
 
 def calc_recall_ndcg(topLocs, tstLocs, batIds):
@@ -292,6 +294,7 @@ def train_batch(model, train_loader, optimizer, device, epoch_id, len_train_data
         loss_mean += train_loss_task.item() * len(train_data.edge_label)
         loss_balance += loss_balance_one.item() * len(train_data.edge_label)
         all_num += len(train_data.edge_label)
+    torch.cuda.empty_cache()
     loss_mean = loss_mean / all_num
     loss_balance = loss_balance / all_num
     assert all_num == sum(list_num)
@@ -397,42 +400,36 @@ def eval_link(model, test_dataset, dataset_name):
         # Sample 30 neighbors for each node for 2 iterations
         num_neighbors=[30] * 3,
         # Use a batch size of 128 for sampling training nodes
-        batch_size=args.batch,
+        batch_size=512,
         neg_sampling_ratio=0,
-        num_workers=workers,
+        num_workers=0,
         shuffle=False,
-        persistent_workers=True,
     )
-
-    feats = []
-    test_batch_num = 0
-    for train_data in tqdm(trn_data_loader):  # 遍历每个batch
-        train_data = train_data.to(args.devices[0])  # 将数据移动到对应设备
-        # 前向传播，得到模型输出
-        _, all_router_logits, embeds = model(train_data)
-        feats.append(embeds)
-        if args.flag_router:
-            if test_batch_num % 500 == 0:
-                print(dataset_name)
-                print_log(0, all_router_logits, is_train=False)
-        test_batch_num += 1
-    feats = torch.cat(feats, dim=0)
-
-    test_data = Tst_Dataset(tst_data, trn_data)
+    test_data = TstData(tst_data, trn_data)
     tst_loader = torch.utils.data.DataLoader(test_data, batch_size=args.tst_batch, shuffle=False, num_workers=0)
-
     model.eval()
     with torch.no_grad():
+        feats = []
+        test_batch_num = 0
+        for train_data in tqdm(trn_data_loader):  # 遍历每个batch
+            train_data = train_data.to(args.devices[0])  # 将数据移动到对应设备
+            # 前向传播，得到模型输出
+            _, all_router_logits, embeds = model(train_data)
+            feats.append(embeds.detach().cpu())
+            if args.flag_router:
+                if test_batch_num % 500 == 0:
+                    print(dataset_name)
+                    print_log(0, all_router_logits, is_train=False)
+            test_batch_num += 1
+        feats = torch.cat(feats, dim=0)
+
         ep_recall, ep_ndcg = 0, 0
         ep_tstnum = len(tst_loader.dataset)
-        steps = max(ep_tstnum // args.tst_batch, 1)
         for i, batch_data in enumerate(tst_loader):
-            if args.tst_steps != -1 and i > args.tst_steps:
-                break
-
             usrs = batch_data.long()
             trn_masks, cand_size = make_trn_masks(batch_data.numpy(), tst_loader.dataset.csrmat)
             all_preds = model.pred_for_test((usrs, trn_masks), cand_size, feats,)
+
             _, top_locs = torch.topk(all_preds, args.topk_pred)
             top_locs = top_locs.cpu().numpy()
             recall, ndcg = calc_recall_ndcg(top_locs, tst_loader.dataset.tstLocs, usrs)
@@ -479,6 +476,7 @@ def train_epoch_link(model, train_loader, test_datasets, optimizer, device, num_
 
         loss_train, accuracy_train = train_batch(model, train_loader, optimizer, device, epoch_id, len_train_datasets)
         for data_name, test_dataset in test_datasets.items():
+            print(f"test on {data_name}")
             metrics_link = eval_link(model, test_dataset, data_name)
             all_test_metrics[data_name] = metrics_link
             print(f"{data_name} {metrics_link}")

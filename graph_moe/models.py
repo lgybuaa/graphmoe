@@ -202,12 +202,14 @@ class GCN_M(torch.nn.Module):  # 定义一个GNN类，继承自PyTorch的Module�
 
     def pred_for_test(self, batch_data, cand_size, embeds):
         ancs, trn_mask = list(map(lambda x: x.to(args.devices[0]), batch_data))
-        anc_embeds = embeds[ancs]
-        cand_embeds = embeds[-cand_size:]
+        embeds = embeds.to(args.devices[0])
+        anc_embeds = embeds[ancs]  # n*d
+        cand_embeds = embeds[-cand_size:]  # N*d
 
         mask_mat = torch.sparse.FloatTensor(trn_mask, torch.ones(trn_mask.shape[1]).to(args.devices[0]),
                                         torch.Size([ancs.shape[0], cand_size]))
         dense_mat = mask_mat.to_dense()
+        # 需要和训练过程一致，所以不能这么算
         all_preds = anc_embeds @ cand_embeds.T * (1 - dense_mat) - dense_mat * 1e8
         return all_preds
 

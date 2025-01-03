@@ -1,11 +1,21 @@
 import argparse
 
+def str2bool(v):
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
+
 def parse_args():
     parser = argparse.ArgumentParser(description='Model Parameters')
     parser.add_argument('--lr', default=1e-4, type=float, help='learning rate')
     parser.add_argument('--weight_decay', default=5e-4, type=float, help='weight decay')
     parser.add_argument('--batch', default=512, type=int, help='training batch size')
-    parser.add_argument('--tst_batch', default=256, type=int, help='testing batch size')
+    parser.add_argument('--tst_batch', default=128, type=int, help='testing batch size')
     parser.add_argument('--inv_fuc', default='irm', type=str, help='Inv penalty fuction')
     parser.add_argument('--lambda_inv', default=0.01, type=float,help='lambda of inv plenty')
     parser.add_argument('--epoch', default=200, type=int, help='number of epochs')
@@ -28,8 +38,8 @@ def parse_args():
     parser.add_argument('--reca_range', default=0.2, type=float, help='range of recalibration')
     parser.add_argument('--expert_num', default=8, type=int, help='number of experts')
     parser.add_argument('--temperature', default=1, type=float, help='temperature in softmax')
-    parser.add_argument('--add_noise', default=False, type=bool, help='if add noise to logists')
+    parser.add_argument('--add_noise', default=False, type=str2bool, help='if add noise to logists')
     parser.add_argument('--noise_mult', default=1., type=float, help='noise level')
-    parser.add_argument('--flag_router', default=False, type=bool, help='if print router')
+    parser.add_argument('--flag_router', default=False, type=str2bool, help='if print router')
     return parser.parse_args()
 args = parse_args()

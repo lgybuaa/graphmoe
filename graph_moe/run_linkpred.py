@@ -6,7 +6,7 @@ import torch
 import numpy as np
 from params import args
 from train_utils import train_epoch_link
-from data_utils import get_datasets_link, get_dataloader_link
+from data_utils import get_link_datasets, get_link_dataloader
 torch.set_printoptions(profile="full")
 
 # data_ecommercial: dict_keys(['book_children', 'book_history', 'computer', 'sports', 'photo', 'products', 'wikics', 'reddit', 'instagram'])
@@ -21,10 +21,10 @@ args.flagdir = 'log_link'
 args.devices = [f'cuda:{args.gpu}']
 
 # 加载数据
-train_datasets, test_datasets = get_datasets_link(args.train_datasets, args.test_datasets)
+train_datasets, test_datasets = get_link_datasets(args.train_datasets, args.test_datasets)
 len_train_datasets = len(train_datasets)
 len_test_datasets = len(test_datasets)
-train_loader = get_dataloader_link(train_datasets, args.batch, args.workers, args.neg_sampling_ratio)
+train_loader = get_link_dataloader(train_datasets, args.batch, args.workers, args.neg_sampling_ratio)
 
 
 # 初始化模型和优化器
@@ -32,7 +32,7 @@ model = GCN_M().to(args.devices[0])  # 实例化GCN模型，并移动到对应�
 # optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)  # 定义Adam优化器
 optimizer = torch.optim.AdamW(model.parameters(), lr=1e-5, weight_decay=0.1, betas=(0.9,0.95), eps=1e-8)  # 定义AdamW优化器
 # 训练模型
-metrics_dict = train_epoch_link(model, train_loader, test_loader, optimizer, args.devices[0], args.epoch, len_train_datasets, len_test_datasets)
+metrics_dict = train_epoch_link(model, train_loader, test_datasets, optimizer, args.devices[0], args.epoch, len_train_datasets, len_test_datasets)
 
 # best eval acc
 best_eval_ndcg = max(metrics_dict['ndcg_eval'])
